@@ -10,37 +10,57 @@ PLAIN='\033[0m'
 
 clear
 echo -e "${GREEN}==================================================================${PLAIN}"
-echo -e "${GREEN}   VPS 多合一环境搭建脚本 (自动清理旧节点 + 域名测速 + BBR加速)   ${PLAIN}"
+echo -e "${GREEN}   VPS 多合一环境一键脚本 (无痕日志清理 + 纯净证书重置 + 最速BBR)   ${PLAIN}"
 echo -e "${GREEN}==================================================================${PLAIN}"
 
-# ==================== 🧹 0. 自动清理旧节点及释放占用端口 🧹 ====================
-echo -e "${YELLOW}[0/7] 正在检测并强行清理旧节点服务及占用端口...${PLAIN}"
+# ==================== 🧹 0. 自动无痕清理旧节点、端口、证书与日志 🧹 ====================
+echo -e "${YELLOW}[0/7] 正在执行全盘无痕深度清理（清理进程/端口/旧证书/所有日志）...${PLAIN}"
 
-# 1. 停止可能存在的旧服务
+# 1. 强行停止并注销可能存在的旧服务进程
 systemctl stop xray hysteria-server nginx >/dev/null 2>&1
 systemctl disable xray hysteria-server nginx >/dev/null 2>&1
 
-# 2. 安装 psmisc (确保 fuser 和 killall 命令可用)
+# 2. 安装 psmisc (确保端口释放工具可用)
 apt update -y && apt install -y psmisc >/dev/null 2>&1
 
-# 3. 强行杀死占用 80、443、8080 端口的所有残留进程
-echo -e "${YELLOW}正在强行释放端口: 80 (HTTP), 443 (TLS), 8080 (VMess)...${PLAIN}"
+# 3. 强行粉碎并释放残留端口：80, 443, 8080
+echo -e "${YELLOW}👉 正在强行释放端口占用: 80, 443, 8080...${PLAIN}"
 fuser -k 80/tcp >/dev/null 2>&1
 fuser -k 443/tcp >/dev/null 2>&1
 fuser -k 443/udp >/dev/null 2>&1
 fuser -k 8080/tcp >/dev/null 2>&1
 
-# 4. 删除旧的冲突配置文件和残留目录（保留证书目录，防止重复申请触发 Let's Encrypt 频率限制）
-rm -rf /usr/local/etc/xray
-rm -rf /etc/hysteria
-rm -rf /etc/nginx/sites-available/default
-rm -rf /etc/nginx/sites-enabled/default
+# 4. 【核心新增】彻底摧毁并清空旧证书及 acme.sh 运行环境
+echo -e "${YELLOW}👉 正在彻底清除并重置旧 TLS 证书环境...${PLAIN}"
+rm -rf ~/.acme.sh >/dev/null 2>&1
+rm -rf /etc/vps-cert >/dev/null 2>&1
 
-echo -e "${GREEN}✔️ 旧节点服务已彻底卸载，相关端口已成功释放！${PLAIN}\n"
+# 5. 摧毁旧的节点配置文件及网页伪装目录
+rm -rf /usr/local/etc/xray >/dev/null 2>&1
+rm -rf /etc/hysteria >/dev/null 2>&1
+rm -rf /etc/nginx/sites-available/default >/dev/null 2>&1
+rm -rf /etc/nginx/sites-enabled/default >/dev/null 2>&1
+rm -rf /var/www/html/* >/dev/null 2>&1
+
+# 6. 【核心新增】全盘抹除旧服务的运行日志与系统审计日志（实现隐私保护）
+echo -e "${YELLOW}👉 正在强制粉碎并清空所有残留运行日志与系统审计日志...${PLAIN}"
+# 清空 Nginx、Xray、Hysteria 的物理日志文件
+rm -rf /var/log/nginx/* >/dev/null 2>&1
+rm -rf /var/log/xray/* >/dev/null 2>&1
+# 截断（清空）Linux系统全局核心日志文件内容，但不删除文件本身（防止系统报错）
+[ -f /var/log/syslog ] && cat /dev/null > /var/log/syslog
+[ -f /var/log/auth.log ] && cat /dev/null > /var/log/auth.log
+[ -f /var/log/daemon.log ] && cat /dev/null > /var/log/daemon.log
+[ -f /var/log/messages ] && cat /dev/null > /var/log/messages
+# 强制清空 systemd journald 内存及磁盘上的所有历史归档日志
+journalctl --rotate >/dev/null 2>&1
+journalctl --vacuum-time=1s >/dev/null 2>&1
+
+echo -e "${GREEN}✔️ 旧节点已完全移除，旧证书与所有历史日志已成功全盘抹除！${PLAIN}\n"
 
 # ==================== 📥 用户输入阶段 ====================
-read -p "请输入你的域名 (例如: proxy.example.com): " DOMAIN
-read -p "请输入你的邮箱 (用于申请证书): " EMAIL
+read -p "请输入你的新域名 (例如: proxy.example.com): " DOMAIN
+read -p "请输入你的新邮箱 (用于重新申请证书): " EMAIL
 
 if [ -z "$DOMAIN" ] || [ -z "$EMAIL" ]; then
     echo -e "${RED}错误：域名和邮箱不能为空！${PLAIN}"
@@ -100,36 +120,33 @@ else
     echo -e "${GREEN}✔️ 已成功找到当前 VPS 连接延迟最低的域名: ${YELLOW}$REALITY_DEST_DOMAIN${GREEN} (延迟: ${LOWEST_PING} ms)${PLAIN}"
 fi
 
-# 生成各种随机参数
+# 生成各种全新的随机参数
 UUID_VLESS=$(cat /proc/sys/kernel/random/uuid)
 UUID_VMESS=$(cat /proc/sys/kernel/random/uuid)
 HY2_PASS=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)
 WS_PATH="/vmessws"
 
 # ==================== 📦 3. 安装基础依赖与 Nginx ====================
-echo -e "\n${YELLOW}[3/7] 正在安装基础依赖、Nginx及二维码工具...${PLAIN}"
+echo -e "\n${YELLOW}[3/7] 正在全新安装基础依赖、Nginx及二维码工具...${PLAIN}"
 apt install -y curl socat wget unzip nginx jq iptables git qrencode openssl
 
-# ==================== 🔒 4. 使用 acme.sh 申请 TLS 证书 ====================
-echo -e "\n${YELLOW}[4/7] 正在通过 acme.sh 申请域名的 TLS 真实证书...${PLAIN}"
-# 如果已经存在旧证书，这里采用覆盖/续期逻辑，防止 acme.sh 报错
+# ==================== 🔒 4. 重新从零申请 TLS 证书 ====================
+echo -e "\n${YELLOW}[4/7] 正在全新安装 acme.sh 并申请纯净的 TLS 真实证书...${PLAIN}"
+curl -sSL https://get.acme.sh | sh -s email=$EMAIL
 if [ ! -f "${HOME}/.acme.sh/acme.sh" ]; then
-    curl -sSL https://get.acme.sh | sh -s email=$EMAIL
-    if [ ! -f "${HOME}/.acme.sh/acme.sh" ]; then
-        git clone https://github.com/acmesh-official/acme.sh.git
-        cd acme.sh && ./acme.sh --install -m $EMAIL && cd ..
-    fi
+    git clone https://github.com/acmesh-official/acme.sh.git
+    cd acme.sh && ./acme.sh --install -m $EMAIL && cd ..
 fi
 
 ACME_BIN="${HOME}/.acme.sh/acme.sh"
 $ACME_BIN --upgrade --auto-upgrade
 $ACME_BIN --set-default-ca --server letsencrypt
 
-echo -e "${YELLOW}正在向 Let's Encrypt 验证域名并颁发证书...${PLAIN}"
+echo -e "${YELLOW}正在向 Let's Encrypt 验证新域名并发放全新证书...${PLAIN}"
 $ACME_BIN --issue -d $DOMAIN --standalone --keylength ec-256 --force
 
 if [ $? -ne 0 ]; then
-    echo -e "${RED}错误：证书申请失败！请确认您的域名 [${RED}$DOMAIN${PLAIN}] 是否已正确解析到此 VPS。${PLAIN}"
+    echo -e "${RED}错误：证书申请失败！请确认您的新域名 [${RED}$DOMAIN${PLAIN}] 是否已正确解析到此 VPS 且外部防火墙已放行 80 端口。${PLAIN}"
     exit 1
 fi
 
@@ -141,18 +158,16 @@ $ACME_BIN --install-cert -d $DOMAIN --ecc \
 chmod 644 /etc/vps-cert/private.key
 chmod 644 /etc/vps-cert/cert.crt
 
-# ==================== 🛠️ 5. 安装并配置 Xray ====================
-echo -e "\n${YELLOW}[5/7] 安装并配置 Xray-core 内核...${PLAIN}"
+# ==================== 🛠️ 5. 配置全新 Xray (注入精准过滤密钥) ====================
+echo -e "\n${YELLOW}[5/7] 配置全新的 Xray-core 内核...${PLAIN}"
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-# 生成纯净密钥
 xray x25519 > /tmp/xkeys
 PRIVATE_KEY=$(grep "Private key:" /tmp/xkeys | awk -F': ' '{print $2}' | tr -d '[:space:]')
 PUBLIC_KEY=$(grep "Public key:" /tmp/xkeys | awk -F': ' '{print $2}' | tr -d '[:space:]')
 SHORT_ID=$(head /dev/urandom | tr -dc a-f0-9 | head -c 16)
 rm -f /tmp/xkeys
 
-# 写入格式绝对正确的 Xray 配置文件
 cat <<EOF > /usr/local/etc/xray/config.json
 {
     "log": { "loglevel": "warning" },
@@ -198,8 +213,8 @@ systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
 
-# ==================== 🌐 6. 配置 Nginx 网站伪装与反代 ====================
-echo -e "\n${YELLOW}[6/7] 配置 Nginx 分流与网站防探测伪装...${PLAIN}"
+# ==================== 🌐 6. 配置全新 Nginx 网站伪装与反代 ====================
+echo -e "\n${YELLOW}[6/7] 配置 Nginx 网页分流与伪装...${PLAIN}"
 cat <<EOF > /etc/nginx/sites-available/default
 server {
     listen 80;
@@ -224,8 +239,8 @@ server {
 EOF
 systemctl restart nginx
 
-# ==================== ⚡ 7. 安装并配置 Hysteria 2 ====================
-echo -e "\n${YELLOW}[7/7] 安装并配置 Hysteria 2 核心...${PLAIN}"
+# ==================== ⚡ 7. 配置全新 Hysteria 2 ====================
+echo -e "\n${YELLOW}[7/7] 全新配置 Hysteria 2 核心...${PLAIN}"
 bash <(curl -fsSL https://get.hy2.sh)
 
 cat <<EOF > /etc/hysteria/config.yaml
@@ -249,18 +264,18 @@ systemctl daemon-reload
 systemctl enable hysteria-server
 systemctl restart hysteria-server
 
-# 放行防火墙
+# 放行系统防火墙端口
 iptables -A INPUT -p tcp --dport 80 -j ACCEPT
 iptables -A INPUT -p tcp --dport 443 -j ACCEPT
 iptables -A INPUT -p udp --dport 443 -j ACCEPT
 
-# ==================== 🛠️ 自动拼接并生成节点链接 ====================
-VLESS_LINK="vless://${UUID_VLESS}@${DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_DEST_DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#VLESS_Reality_Auto"
+# ==================== 🛠️ 全新拼接节点链接 ====================
+VLESS_LINK="vless://${UUID_VLESS}@${DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_DEST_DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#VLESS_Reality_Fresh"
 
 VMESS_JSON=$(cat <<EOF
 {
   "v": "2",
-  "ps": "VMess_WS_TLS",
+  "ps": "VMess_WS_Fresh",
   "add": "${DOMAIN}",
   "port": "443",
   "id": "${UUID_VMESS}",
@@ -279,16 +294,16 @@ EOF
 VMESS_BASE64=$(echo -n "$VMESS_JSON" | base64 | tr -d '\n')
 VMESS_LINK="vmess://${VMESS_BASE64}"
 
-HY2_LINK="hysteria2://${HY2_PASS}@${DOMAIN}:443?sni=${DOMAIN}&alpn=h3&insecure=0#Hysteria2_UDP"
+HY2_LINK="hysteria2://${HY2_PASS}@${DOMAIN}:443?sni=${DOMAIN}&alpn=h3&insecure=0#Hysteria2_UDP_Fresh"
 
 # ==================== 🖨️ 打印结果 ====================
 clear
 echo -e "${GREEN}==================================================================${PLAIN}"
-echo -e "  🎉 恭喜！旧节点已全自动清理，新多协议环境已成功搭建完成！"
+echo -e "  🎉 深度洗净！历史日志及证书已全盘清空，全新环境已成功搭建完成！"
 echo -e "  🔥 经测速，已自动为您选用当前最速 Reality 伪装域名: ${YELLOW}$REALITY_DEST_DOMAIN${PLAIN}"
 echo -e "${GREEN}==================================================================${PLAIN}"
 
-echo -e "\n${YELLOW}👉 节点【1】: VLESS - Reality (AnyTLS / 最优伪装域名绑定方案)${PLAIN}"
+echo -e "\n${YELLOW}👉 节点【1】: VLESS - Reality (AnyTLS 纯净全新配置)${PLAIN}"
 echo -e "链接 (直接复制):"
 echo -e "${GREEN}${VLESS_LINK}${PLAIN}"
 echo -e "手机扫码导入:"
@@ -296,7 +311,7 @@ qrencode -t ansiutf8 "$VLESS_LINK"
 
 echo -e "\n${GREEN}------------------------------------------------------------------${PLAIN}"
 
-echo -e "\n${YELLOW}👉 节点【2】: VMess - WS - TLS (Nginx 反向代理方案)${PLAIN}"
+echo -e "\n${YELLOW}👉 节点【2】: VMess - WS - TLS (纯净全新反代配置)${PLAIN}"
 echo -e "链接 (直接复制):"
 echo -e "${GREEN}${VMESS_LINK}${PLAIN}"
 echo -e "手机扫码导入:"
@@ -304,7 +319,7 @@ qrencode -t ansiutf8 "$VMESS_LINK"
 
 echo -e "\n${GREEN}------------------------------------------------------------------${PLAIN}"
 
-echo -e "\n${YELLOW}👉 节点【3】: Hysteria 2 (UDP 协议强力加速方案)${PLAIN}"
+echo -e "\n${YELLOW}👉 节点【3】: Hysteria 2 (纯净全新 UDP 暴风加速配置)${PLAIN}"
 echo -e "链接 (直接复制):"
 echo -e "${GREEN}${HY2_LINK}${PLAIN}"
 echo -e "手机扫码导入:"
