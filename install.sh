@@ -8,61 +8,77 @@ PLAIN='\033[0m'
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误：必须使用 root 用户运行此脚本！${PLAIN}" && exit 1
 
-echo -e "${GREEN}========== VPS 多合一翻墙环境搭建脚本 (终极稳定版) ==========${PLAIN}"
+clear
+echo -e "${GREEN}==================================================================${PLAIN}"
+echo -e "${GREEN}   VPS 多合一环境搭建脚本 (自动开启BBR加速 + 自动输出节点链接版)   ${PLAIN}"
+echo -e "${GREEN}==================================================================${PLAIN}"
 read -p "请输入你的域名 (例如: proxy.example.com): " DOMAIN
 read -p "请输入你的邮箱 (用于申请证书): " EMAIL
 
 if [ -z "$DOMAIN" ] || [ -z "$EMAIL" ]; then
-    echo -e "${RED}域名和邮箱不能为空！${PLAIN}"
+    echo -e "${RED}错误：域名和邮箱不能为空！${PLAIN}"
     exit 1
 fi
 
-# 生成各种随机 UUID 和密码
+# ==================== 🚀 1. 自动开启 BBR 加速逻辑 🚀 ====================
+echo -e "\n${YELLOW}[1/6] 正在检查并自动开启 BBR 系统加速...${PLAIN}"
+if lsmod | grep -q bbr; then
+    echo -e "${GREEN}【BBR状态】检测到 BBR 加速早已处于开启状态，保持现状。${PLAIN}"
+else
+    echo -e "${YELLOW}正在为您的 Linux 内核配置 BBR 拥塞控制算法...${PLAIN}"
+    # 清理并写入 BBR 配置参数
+    sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
+    sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    
+    # 刷新内核配置使其生效
+    sysctl -p >/dev/null 2>&1
+    
+    # 验证是否成功开启
+    if sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then
+        echo -e "${GREEN}【BBR状态】成功：BBR 拥塞控制算法已成功启动，TCP网络已全面加速！${PLAIN}"
+    else
+        echo -e "${RED}【BBR状态】警告：BBR 自动开启失败。这通常是因为您的 VPS 属于 OpenVZ 虚拟化架构（如部分低端廉价魔方VPS），该架构不支持修改内核，请知悉。${PLAIN}"
+    fi
+fi
+
+# 生成各种随机 UUID、路径和密码
 UUID_VLESS=$(cat /proc/sys/kernel/random/uuid)
 UUID_VMESS=$(cat /proc/sys/kernel/random/uuid)
 HY2_PASS=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)
 WS_PATH="/vmessws"
 
-# 1. 安装基础依赖与 Nginx
-echo -e "${YELLOW}[1/5] 安装基础依赖与 Nginx...${PLAIN}"
-# 加上 || true 防止 apt update 报错时直接退出脚本
+# ==================== 📦 2. 安装基础依赖与 Nginx ====================
+echo -e "\n${YELLOW}[2/6] 正在安装基础依赖、Nginx及二维码工具...${PLAIN}"
 apt update -y || true 
-apt install -y curl socat wget unzip nginx jq iptables psmisc git
+apt install -y curl socat wget unzip nginx jq iptables psmisc git qrencode
 
-# 强制释放 80 端口，防止抢占
-echo -e "${YELLOW}正在清理 80 端口占用...${PLAIN}"
+# 强行释放 80 端口，防止被前次残留进程抢占
 systemctl stop nginx
 fuser -k 80/tcp >/dev/null 2>&1
 
-# 2. 使用 acme.sh 申请证书 (改用最稳妥的绝对路径安装)
-echo -e "${YELLOW}[2/5] 正在安装 acme.sh 并申请 TLS 证书...${PLAIN}"
+# ==================== 🔒 3. 使用 acme.sh 申请 TLS 证书 ====================
+echo -e "\n${YELLOW}[3/6] 正在通过 acme.sh 申请域名的 TLS 真实证书...${PLAIN}"
 rm -rf ~/.acme.sh
-
-# 下载并安装 acme.sh
 curl -sSL https://get.acme.sh | sh -s email=$EMAIL
 
-# 检查 acme.sh 是否成功下载
 if [ ! -f "${HOME}/.acme.sh/acme.sh" ]; then
-    echo -e "${RED}错误：acme.sh 下载失败！可能是您的 VPS 连接 Let's Encrypt 网络不畅。${PLAIN}"
-    echo -e "${YELLOW}尝试使用 GitHub 备用源安装...${PLAIN}"
+    echo -e "${YELLOW}网络超时，正在尝试使用 GitHub 备用源安装 acme.sh...${PLAIN}"
     git clone https://github.com/acmesh-official/acme.sh.git
     cd acme.sh && ./acme.sh --install -m $EMAIL && cd ..
 fi
 
-# 绝对路径调用 acme.sh，避免使用 source 导致终端退出
 ACME_BIN="${HOME}/.acme.sh/acme.sh"
-
 $ACME_BIN --upgrade --auto-upgrade
 $ACME_BIN --set-default-ca --server letsencrypt
 
-echo -e "${YELLOW}开始向 Let's Encrypt 申请证书，请稍候...${PLAIN}"
+echo -e "${YELLOW}正在向 Let's Encrypt 验证域名并颁发证书，请稍候...${PLAIN}"
 $ACME_BIN --issue -d $DOMAIN --standalone --keylength ec-256 --force
 
 if [ $? -ne 0 ]; then
-    echo -e "${RED}证书申请失败！${PLAIN}"
-    echo -e "${YELLOW}原因排查提示：${PLAIN}"
-    echo -e "1. 您的域名 [${RED}$DOMAIN${PLAIN}] 是否已经成功解析到这台 VPS 的 IP？"
-    echo -e "2. 云厂商后台（安全组）的 ${RED}80 端口${PLAIN} 是否放行？"
+    echo -e "${RED}错误：证书申请失败！${PLAIN}"
+    echo -e "${YELLOW}请排查：1. 您的域名 [${RED}$DOMAIN${PLAIN}] 是否正确解析到此 VPS IP？2. 服务商后台安全组的 80 端口是否放行？${PLAIN}"
     exit 1
 fi
 
@@ -73,10 +89,9 @@ $ACME_BIN --install-cert -d $DOMAIN --ecc \
 
 chmod 644 /etc/vps-cert/private.key
 chmod 644 /etc/vps-cert/cert.crt
-echo -e "${GREEN}证书申请成功！继续下一步...${PLAIN}"
 
-# 3. 安装并配置 Xray (负责 Vless, Vmess, AnyTLS 分流)
-echo -e "${YELLOW}[3/5] 安装并配置 Xray-core...${PLAIN}"
+# ==================== 🛠️ 4. 安装并配置 Xray (Vless / Vmess / AnyTLS思想) ====================
+echo -e "\n${YELLOW}[4/6] 安装并配置 Xray-core 内核...${PLAIN}"
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
 REALITY_KEYS=$(xray x25519)
@@ -124,11 +139,10 @@ cat <<EOF > /usr/local/etc/xray/config.json
     "outbounds": [ { "protocol": "freedom" } ]
 }
 EOF
-
 systemctl restart xray
 
-# 4. 配置 Nginx 实现回国伪装与 Vmess-WS 反代
-echo -e "${YELLOW}[4/5] 配置 Nginx 网站伪装与反向代理...${PLAIN}"
+# ==================== 🌐 5. 配置 Nginx 网站伪装与反代 ====================
+echo -e "\n${YELLOW}[5/6] 配置 Nginx 分流与网站防探测伪装...${PLAIN}"
 cat <<EOF > /etc/nginx/sites-available/default
 server {
     listen 80;
@@ -153,65 +167,94 @@ server {
 EOF
 systemctl restart nginx
 
-# 5. 安装并配置 Hysteria 2
-echo -e "${YELLOW}[5/5] 安装并配置 Hysteria 2...${PLAIN}"
+# ==================== ⚡ 6. 安装并配置 Hysteria 2 ====================
+echo -e "\n${YELLOW}[6/6] 安装并配置 Hysteria 2 核心...${PLAIN}"
 bash <(curl -fsSL https://get.hy2.sh)
 
 cat <<EOF > /etc/hysteria/config.yaml
 listen: :443
-
 tls:
   cert: /etc/vps-cert/cert.crt
   key: /etc/vps-cert/private.key
-
 auth:
   type: password
   password: $HY2_PASS
-
 masquerade:
   type: proxy
   proxy:
     url: http://127.0.0.1:80
     rewriteHost: true
-
 advanced:
   udp_gso: true
 EOF
-
 systemctl restart hysteria-server
 
-# 开放防火墙端口
+# 放行系统防火墙端口
 iptables -A INPUT -p tcp --dport 80 -j ACCEPT
 iptables -A INPUT -p tcp --dport 443 -j ACCEPT
 iptables -A INPUT -p udp --dport 443 -j ACCEPT
 
+# ==================== 🛠️ 自动拼接并生成节点链接逻辑 ====================
+
+# 1. 拼接 VLESS-Reality-Vision (AnyTLS防探测标准链接)
+VLESS_LINK="vless://${UUID_VLESS}@${DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DOMAIN}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#VLESS_Reality_Vision"
+
+# 2. 拼接 VMess-WS-TLS 链接 (VMess 链接需要将其内部参数打包为 JSON 再进行 Base64 编码)
+VMESS_JSON=$(cat <<EOF
+{
+  "v": "2",
+  "ps": "VMess_WS_TLS",
+  "add": "${DOMAIN}",
+  "port": "443",
+  "id": "${UUID_VMESS}",
+  "aid": "0",
+  "scy": "auto",
+  "net": "ws",
+  "type": "none",
+  "host": "${DOMAIN}",
+  "path": "${WS_PATH}",
+  "tlst": "tls",
+  "sni": "${DOMAIN}",
+  "alpn": ""
+}
+EOF
+)
+VMESS_BASE64=$(echo -n "$VMESS_JSON" | base64 | tr -d '\n')
+VMESS_LINK="vmess://${VMESS_BASE64}"
+
+# 3. 拼接 Hysteria 2 协议标准链接
+HY2_LINK="hysteria2://${HY2_PASS}@${DOMAIN}:443?sni=${DOMAIN}&alpn=h3&insecure=0#Hysteria2_UDP"
+
+
+# ==================== 🖨️ 最终大功告成打印结果 ====================
 clear
-echo -e "${GREEN}=================================================="
-echo -e "       恭喜！所有协议节点已成功搭建完成！          "
-echo -e "==================================================${PLAIN}"
-echo -e "${YELLOW}[1] VLESS - Reality (AnyTLS 架构/无证书防探测)${PLAIN}"
-echo -e "    - 服务器地址: ${GREEN}$DOMAIN${PLAIN}"
-echo -e "    - 端口: ${GREEN}443${PLAIN}"
-echo -e "    - 用户ID (UUID): ${GREEN}$UUID_VLESS${PLAIN}"
-echo -e "    - 流控 (Flow): ${GREEN}xtls-rprx-vision${PLAIN}"
-echo -e "    - 安全传输 (TLS): ${GREEN}reality${PLAIN}"
-echo -e "    - SNI (Server Name): ${GREEN}$DOMAIN${PLAIN}"
-echo -e "    - Master Key (PrivateKey): ${GREEN}$PRIVATE_KEY${PLAIN}"
-echo -e "    - Public Key (PublicKey): ${GREEN}$PUBLIC_KEY${PLAIN}"
-echo -e "    - Short ID: ${GREEN}$SHORT_ID${PLAIN}"
-echo ""
-echo -e "${YELLOW}[2] VMess - WS - TLS (传统兼容性最好的方案)${PLAIN}"
-echo -e "    - 服务器地址: ${GREEN}$DOMAIN${PLAIN}"
-echo -e "    - 端口: ${GREEN}443${PLAIN}"
-echo -e "    - 用户ID (UUID): ${GREEN}$UUID_VMESS${PLAIN}"
-echo -e "    - 传输协议: ${GREEN}ws (WebSocket)${PLAIN}"
-echo -e "    - 伪装路径 (Path): ${GREEN}$WS_PATH${PLAIN}"
-echo -e "    - 安全传输 (TLS): ${GREEN}tls${PLAIN}"
-echo -e "    - SNI: ${GREEN}$DOMAIN${PLAIN}"
-echo ""
-echo -e "${YELLOW}[3] Hysteria 2 (UDP 暴风加速)${PLAIN}"
-echo -e "    - 服务器地址: ${GREEN}$DOMAIN${PLAIN}"
-echo -e "    - 端口: ${GREEN}443 (UDP)${PLAIN}"
-echo -e "    - 认证密码: ${GREEN}$HY2_PASS${PLAIN}"
-echo -e "    - 伪装 SNI: ${GREEN}$DOMAIN${PLAIN}"
-echo -e "=================================================="
+echo -e "${GREEN}==================================================================${PLAIN}"
+echo -e "  🎉 恭喜！多协议环境已成功搭建完成！BBR加速已全面加载生效！"
+echo -e "${GREEN}==================================================================${PLAIN}"
+
+echo -e "\n${YELLOW}👉 节点【1】: VLESS - Reality (AnyTLS / 无证书防探测方案)${PLAIN}"
+echo -e "链接 (直接复制):"
+echo -e "${GREEN}${VLESS_LINK}${PLAIN}"
+echo -e "手机扫码导入:"
+qrencode -t ansiutf8 "$VLESS_LINK"
+
+echo -e "\n${GREEN}------------------------------------------------------------------${PLAIN}"
+
+echo -e "\n${YELLOW}👉 节点【2】: VMess - WS - TLS (Nginx 反向代理传统稳定方案)${PLAIN}"
+echo -e "链接 (直接复制):"
+echo -e "${GREEN}${VMESS_LINK}${PLAIN}"
+echo -e "手机扫码导入:"
+qrencode -t ansiutf8 "$VMESS_LINK"
+
+echo -e "\n${GREEN}------------------------------------------------------------------${PLAIN}"
+
+echo -e "\n${YELLOW}👉 节点【3】: Hysteria 2 (UDP 协议 / 晚高峰强力冲破限制方案)${PLAIN}"
+echo -e "链接 (直接复制):"
+echo -e "${GREEN}${HY2_LINK}${PLAIN}"
+echo -e "手机扫码导入:"
+qrencode -t ansiutf8 "$HY2_LINK"
+
+echo -e "${GREEN}==================================================================${PLAIN}"
+echo -e "${YELLOW}使用提示：${PLAIN}"
+echo -e "1. 电脑端：使用鼠标直接框选复制绿色的 ${GREEN}vless://、vmess:// 或 hysteria2://${PLAIN} 链接，在客户端中选择“从剪贴板导入”即可。"
+echo -e "2. 手机端：直接打开 Shadowrocket（小火箭）等客户端，点击右上角的扫码框，扫描上方终端里渲染出的二维码即可一键添加。"
